@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"sort"
@@ -311,11 +312,16 @@ func printResults(data map[string]measurement) {
 		}
 
 		m := data[name]
+		avg := (float64(m.sum) / float64(m.count)) / 10.0
+		avg = math.Round(avg*10.0) / 10.0
+		if avg == 0 {
+			avg = 0
+		}
 		out.WriteString(name)
 		out.WriteByte('=')
 		out.WriteString(fmt.Sprintf("%.1f/%.1f/%.1f",
 			float64(m.min)/10.0,
-			(float64(m.sum)/float64(m.count))/10.0,
+			avg,
 			float64(m.max)/10.0,
 		))
 	}
