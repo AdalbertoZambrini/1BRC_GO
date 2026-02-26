@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"runtime"
@@ -13,6 +14,12 @@ import (
 )
 
 const batchSize = 10000
+
+type stationProfile struct {
+	name     []byte
+	mean10x  int
+	range10x int
+}
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
@@ -40,32 +47,93 @@ func printUsage() {
 	os.Exit(1)
 }
 
-func buildWeatherStationNameList() []string {
+func buildDefaultStationProfiles() []stationProfile {
+	defaultNames := []string{
+		"Abha", "Athens", "Bangkok", "Barcelona", "Berlin", "Cairo", "Dakar", "Dallas",
+		"Hanoi", "Houston", "Istanbul", "Jakarta", "Kabul", "Lagos", "London", "Madrid",
+		"Melbourne", "Miami", "Moscow", "Mumbai", "New York", "Paris", "Rome", "Seoul",
+		"Sydney", "Tokyo", "Warsaw",
+	}
+
+	profiles := make([]stationProfile, 0, len(defaultNames))
+	for i, name := range defaultNames {
+		mean10x := 260 - ((i * 15) % 520)
+		range10x := 70 + ((i * 9) % 110)
+		profiles = append(profiles, stationProfile{
+			name:     []byte(name),
+			mean10x:  mean10x,
+			range10x: range10x,
+		})
+	}
+	return profiles
+}
+
+func climateFromLatitude(lat float64) (int, int) {
+	absLat := math.Abs(lat)
+
+	meanC := 30.0 - (absLat * 0.5)
+	if meanC < -10.0 {
+		meanC = -10.0
+	}
+	if meanC > 32.0 {
+		meanC = 32.0
+	}
+
+	swingC := 3.0 + (absLat * 0.15)
+	if swingC < 3.0 {
+		swingC = 3.0
+	}
+	if swingC > 18.0 {
+		swingC = 18.0
+	}
+
+	return int(math.Round(meanC * 10.0)), int(math.Round(swingC * 10.0))
+}
+
+func buildWeatherStationProfiles() []stationProfile {
 	file, err := os.Open("data.csv")
 	if err != nil {
 		fmt.Printf("Warning: Could not open data.csv (%v). Using default stations.\n", err)
-		return []string{"Abha", "Athens", "Bangkok", "Barcelona", "Berlin", "Cairo", "Dakar", "Dallas", "Hanoi", "Houston", "Istanbul", "Jakarta", "Kabul", "Lagos", "London", "Madrid", "Melbourne", "Miami", "Moscow", "Mumbai", "New York", "Paris", "Rome", "Seoul", "Sydney", "Tokyo", "Warsaw"}
+		return buildDefaultStationProfiles()
 	}
 	defer file.Close()
 
-	stationSet := make(map[string]struct{})
+	stationSet := make(map[string]struct{}, 1024)
+	profiles := make([]stationProfile, 0, 1024)
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "#") {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		parts := strings.Split(line, ";")
-		if len(parts) > 0 && parts[0] != "" {
-			stationSet[parts[0]] = struct{}{}
+		if len(parts) < 2 || parts[0] == "" {
+			continue
 		}
+
+		if _, exists := stationSet[parts[0]]; exists {
+			continue
+		}
+		lat, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			continue
+		}
+
+		stationSet[parts[0]] = struct{}{}
+		mean10x, range10x := climateFromLatitude(lat)
+		profiles = append(profiles, stationProfile{
+			name:     []byte(parts[0]),
+			mean10x:  mean10x,
+			range10x: range10x,
+		})
 	}
 
-	var stations []string
-	for s := range stationSet {
-		stations = append(stations, s)
+	if len(profiles) == 0 {
+		fmt.Println("Warning: Could not parse stations from data.csv. Using default stations.")
+		return buildDefaultStationProfiles()
 	}
-	return stations
+	return profiles
 }
 
 func convertBytes(num float64) string {
@@ -96,10 +164,10 @@ func formatElapsedTime(seconds float64) string {
 	return fmt.Sprintf("%d hours %d minutes %d seconds", hours, mins, secs)
 }
 
-func estimateFileSize(stations []string, numRows int) string {
+func estimateFileSize(stations []stationProfile, numRows int) string {
 	var totalBytes int
 	for _, s := range stations {
-		totalBytes += len(s)
+		totalBytes += len(s.name)
 	}
 	avgNameBytes := float64(totalBytes) / float64(len(stations))
 	avgTempBytes := 4.4002
@@ -126,13 +194,13 @@ func appendTemp(b []byte, temp10x int) []byte {
 	return b
 }
 
-func buildTestData(stations []string, numRowsToCreate int) {
+func buildTestData(stations []stationProfile, numRowsToCreate int) {
 	startTime := time.Now()
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	stationBytes10k := make([][]byte, 10000)
+	stationPool10k := make([]stationProfile, 10000)
 	for i := 0; i < 10000; i++ {
-		stationBytes10k[i] = []byte(stations[rng.Intn(len(stations))])
+		stationPool10k[i] = stations[rng.Intn(len(stations))]
 	}
 
 	chunks := numRowsToCreate / batchSize
@@ -204,11 +272,17 @@ func buildTestData(stations []string, numRowsToCreate int) {
 				}
 
 				for i := 0; i < rows; i++ {
-					station := stationBytes10k[localRng.Intn(10000)]
+					station := stationPool10k[localRng.Intn(10000)]
 
-					temp := localRng.Intn(1999) - 999
+					delta := localRng.Intn(station.range10x*2+1) - station.range10x
+					temp := station.mean10x + delta
+					if temp < -999 {
+						temp = -999
+					} else if temp > 999 {
+						temp = 999
+					}
 
-					b = append(b, station...)
+					b = append(b, station.name...)
 					b = append(b, ';')
 					b = appendTemp(b, temp)
 					b = append(b, '\n')
@@ -237,8 +311,8 @@ func buildTestData(stations []string, numRowsToCreate int) {
 
 func main() {
 	numRowsToCreate := checkArgs()
-	weatherStationNames := buildWeatherStationNameList()
-	fmt.Println(estimateFileSize(weatherStationNames, numRowsToCreate))
-	buildTestData(weatherStationNames, numRowsToCreate)
+	weatherStationProfiles := buildWeatherStationProfiles()
+	fmt.Println(estimateFileSize(weatherStationProfiles, numRowsToCreate))
+	buildTestData(weatherStationProfiles, numRowsToCreate)
 	fmt.Println("Test data build complete.")
 }
