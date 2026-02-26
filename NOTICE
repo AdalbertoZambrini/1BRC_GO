@@ -1,0 +1,18 @@
+1BRC-GO Notices and Attribution
+===============================
+
+This repository contains an implementation inspired by the One Billion Row
+Challenge (1BRC):
+https://github.com/gunnarmorling/1brc
+
+The original 1BRC project is licensed under Apache License 2.0.
+This repository keeps attribution to the original challenge and references.
+
+Data attribution:
+- File: data.csv
+- Source: Adapted from https://simplemaps.com/data/world-cities
+- License: Creative Commons Attribution 4.0 (CC BY 4.0)
+- License URL: https://creativecommons.org/licenses/by/4.0/
+
+If you redistribute this repository, preserve this NOTICE and the relevant
+license texts/links for code and data.
